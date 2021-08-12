@@ -160,13 +160,13 @@ describe("JsonRpc2Implementer", () => {
     });
   });
 
-  describe("#notice()", () => {
+  describe("#notify()", () => {
     it("should call sender", async function () {
       let request;
       rpc.sender = (msg) => {
         request = JSON.parse(msg);
       };
-      const response = await rpc.notice("update", [1, 2, 3, 4, 5]);
+      const response = await rpc.notify("update", [1, 2, 3, 4, 5]);
       assert.deepStrictEqual(request, {
         jsonrpc: VERSION,
         method: "update",
@@ -179,7 +179,7 @@ describe("JsonRpc2Implementer", () => {
         throw new Error("test error");
       };
       try {
-        await rpc.notice("update", [1, 2, 3, 4, 5]);
+        await rpc.notify("update", [1, 2, 3, 4, 5]);
         assert.fail();
       } catch (e) {
         assert(e instanceof Error);
@@ -192,7 +192,7 @@ describe("JsonRpc2Implementer", () => {
         return Promise.reject("test error");
       };
       try {
-        await rpc.notice("update", [1, 2, 3, 4, 5]);
+        await rpc.notify("update", [1, 2, 3, 4, 5]);
         assert.fail();
       } catch (e) {
         assert.strictEqual(e, "test error");
