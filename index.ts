@@ -14,27 +14,49 @@
 /** JSON-RPC2 Protocol Version. フォーマットのバージョン */
 export const VERSION = "2.0";
 
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | {
+  [key: string]: JsonValue;
+};
+export type JsonRpc2Params = JsonValue[] | Record<string, JsonValue>;
+export type JsonRpc2IdNotNull = string | number;
+export type JsonRpc2Id = JsonRpc2IdNotNull | null;
+
 /** JSON-RPC2 Request format. リクエストJSON */
-export interface JsonRpc2Request {
-  jsonrpc: string;
+export interface JsonRpc2Request<
+  P extends JsonRpc2Params,
+  I extends JsonRpc2IdNotNull | JsonRpc2Id | never,
+> {
+  jsonrpc: "2.0";
   method: string;
-  params?: any;
-  id?: number | string;
+  params?: P;
+  id?: I;
 }
+
+export type JsonRpc2Notification<P extends JsonRpc2Params> = JsonRpc2Request<
+  P,
+  never
+>;
 
 /** JSON-RPC2 Response format. レスポンスJSON */
-export interface JsonRpc2Response {
-  jsonrpc: string;
-  result?: any;
-  error?: JsonRpc2ResponseError;
-  id: number | string;
-}
+export type JsonRpc2Response<
+  R extends JsonValue,
+  I extends JsonRpc2IdNotNull | JsonRpc2Id | never,
+> = {
+  jsonrpc: "2.0";
+  result: R;
+  id: I;
+} | {
+  jsonrpc: "2.0";
+  error: JsonRpc2ResponseError;
+  id: I;
+};
 
 /** JSON-RPC2 Response error format. レスポンスJSONのエラー情報 */
-export interface JsonRpc2ResponseError {
-  code: number;
+export interface JsonRpc2ResponseError<E extends JsonValue> {
+  code: ErrorCode | number;
   message: string;
-  data?: any;
+  data?: E;
 }
 
 /**
@@ -63,11 +85,12 @@ const MAX_INT32 = 2147483647;
  * Exception class compatible with JSON-RPC2 error format.
  * JSON-RPC2のエラー情報と互換性を持たせた例外クラス。
  */
-export class JsonRpcError extends Error implements JsonRpc2ResponseError {
+export class JsonRpcError<E extends JsonValue> extends Error
+  implements JsonRpc2ResponseError<E> {
   /** Error code. エラーコード */
-  code: number;
+  readonly code: number;
   /** Additional Data. 例外追加情報 */
-  data: any;
+  readonly data?: E;
 
   /**
 	 * Generate an exception.
@@ -79,7 +102,7 @@ export class JsonRpcError extends Error implements JsonRpc2ResponseError {
   constructor(
     code: number = ErrorCode.InternalError,
     message?: string,
-    data?: any,
+    data?: E,
   ) {
     super(message || makeDefaultErrorMessage(code));
     this.name = "JsonRpcError";
@@ -109,25 +132,16 @@ export class JsonRpcError extends Error implements JsonRpc2ResponseError {
 	 * @param error Error. エラー情報。
 	 * @returns Converted exception. 生成したエラー。
 	 */
-  static convert(error: any): JsonRpcError {
+  // deno-lint-ignore no-explicit-any
+  static convert(error?: JsonRpcError | Error | any): JsonRpcError {
     if (error instanceof JsonRpcError) {
       return error;
     }
-    const json = new JsonRpcError();
-    if (error instanceof Error) {
-      if (error["code"]) {
-        json.code = error["code"];
-      }
-      if (error["message"]) {
-        json.message = error["message"];
-      }
-      if (error["data"]) {
-        json.data = error["data"];
-      }
-    } else {
-      json.message = String(error);
-    }
-    return json;
+    return new JsonRpcError(
+      error?.code,
+      error instanceof Error ? error?.message : String(error),
+      error?.data,
+    );
   }
 }
 
@@ -137,7 +151,7 @@ export class JsonRpcError extends Error implements JsonRpc2ResponseError {
  * @param code Error code. エラーコード。
  * @return Error message. エラーメッセージ。
  */
-function makeDefaultErrorMessage(code: number): string {
+function makeDefaultErrorMessage(code: ErrorCode | number): string {
   switch (code) {
     case ErrorCode.ParseError:
       return "Parse error";
@@ -156,6 +170,8 @@ function makeDefaultErrorMessage(code: number): string {
   return "Unknown Error";
 }
 
+export type Batch<T extends JsonRpc2Request | JsonRpc2Response> = T[];
+
 /**
  * Symbol for "no response".
  * レスポンス不要を通知するためのシンボル。
@@ -172,14 +188,14 @@ export class JsonRpc2Implementer {
   /** Method handler. メソッド呼び出し処理 */
   methodHandler: (
     method: string,
-    params: any,
-    id: number | string,
+    params: JsonRpc2Params,
+    id?: JsonRpc2Id,
   ) => any | Promise<any>;
   /** Timeout for the call method (msec). callのタイムアウト時間（ミリ秒） */
-  timeout: number = 60000;
+  timeout = 60000;
 
   /** JSON-RPC2 request ID counter. JSON-RPC2リクエストID採番用カウンター */
-  protected idCounter: number = 0;
+  protected idCounter = 0;
   /** Callback for the call method's Promise. callのPromise用マップ */
   protected callbackMap: Map<
     number | string,
@@ -197,12 +213,11 @@ export class JsonRpc2Implementer {
 	 * @param id ID. If not specified, generate a sequence number. ID。未指定時は連番で自動生成。
 	 * @return Method result. メソッドの処理結果。
 	 */
-  async call(method: string, params?: any, id?: number | string): Promise<any> {
+  call(method: string, params?: JsonRpc2Params, id?: JsonRpc2Id): Promise<any> {
     // Send a request and save the callback for receiving to the map.
     // Callback is executed indirectly by receiving response.
     // リクエストを送信するとともに、結果受け取り用のコールバックをマップに保存する。
     // コールバックは、receiveがレスポンスを受信することで間接的に実行される。
-    const self = this;
     return new Promise<any>((resolve, reject) => {
       const req = this.createRequest(method, params, id);
       this.callbackMap.set(req.id, { resolve: resolve, reject: reject });
@@ -232,10 +247,10 @@ export class JsonRpc2Implementer {
 			 * コールバック用マップからIDを消去しPromiseをエラーで終わる。
 			 * @param e Error. エラー情報。
 			 */
-      function removeIdAndReject(e: any): void {
-        self.callbackMap.delete(req.id);
+      const removeIdAndReject = (e: any): void => {
+        this.callbackMap.delete(req.id);
         reject(e);
-      }
+      };
     });
   }
 
@@ -399,9 +414,9 @@ export class JsonRpc2Implementer {
 	 */
   createRequest(
     method: string,
-    params?: any,
-    id?: string | number,
-  ): JsonRpc2Request {
+    params?: JsonRpc2Params,
+    id?: JsonRpc2Id,
+  ): JsonRpc2Request & { id: JsonRpc2Id } {
     if (id === null || id === undefined) {
       id = this.generateId();
     } else if (typeof (id) !== "number") {
